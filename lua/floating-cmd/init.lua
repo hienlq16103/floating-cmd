@@ -6,12 +6,8 @@ local M = {}
 
 local win
 local buf
-local namespace = api.nvim_create_namespace("FloatinCmd")
-local prefix_to_prompt = {
-  [":"] = { prompt = "   ", hl = "FloatingCmdNormal" },
-  ["/"] = { prompt = "   ", hl = "FloatingCmdSearch" },
-  ["?"] = { prompt = "   ", hl = "FloatingCmdSearch" },
-}
+local original_win
+local namespace = api.nvim_create_namespace("FloatingCmd")
 
 ---@param bufnr integer
 ---@param pattern string
@@ -31,25 +27,81 @@ local function set_mark(bufnr, pattern, hl_group)
 end
 
 function M.setup(otps)
-  require("floating-cmd.highlight-groups")
+  require("floating-cmd.highlight-groups").setup()
+
 	map({ "n", "v" }, ":", function()
-		M.open(":", default_opts)
+    M.open_cmd(default_opts)
 	end)
-	map({ "n", "v" }, "/", function()
-		M.open("/", default_opts)
-	end)
-	map({ "n", "v" }, "?", function()
-		M.open("?", default_opts)
-	end)
+  -- TODO: Implement search later.
+	-- map({ "n", "v" }, "/", function()
+	--    M.open_search_down(default_opts)
+	-- end)
+	-- map({ "n", "v" }, "?", function()
+	--    M.open_search_up(default_opts)
+	-- end)
 end
 
---- @param prefix string
-function M.open(prefix, opts)
-	if win ~= nil then
-		return
-	end
+function M.open_cmd(opts)
+  original_win = api.nvim_get_current_win()
 
-	local original_win = api.nvim_get_current_win()
+  if not M.open_floating_window(opts) then
+    return
+  end
+
+  M.setup_prompt(opts.modes.cmdline)
+  M.set_prompt_callback(function(input)
+    vim.cmd(input)
+  end)
+  api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, { buffer = buf, callback = function()
+    local line = api.nvim_buf_get_lines(buf, 0, 1, false)[1]
+    local prompt_length = opts.modes.cmdline.prompt:len()
+    line = string.sub(line, prompt_length + 1, -1)
+
+    for _, pattern in ipairs(opts.modes.lua.pattern) do
+      if string.find(line, pattern) then
+        M.setup_prompt(opts.modes.lua)
+        M.set_prompt_callback(function(input)
+          local fn = loadstring(input)
+          if fn then
+            fn()
+          end
+        end)
+        break
+      end
+    end
+  end })
+end
+
+function M.open_search_down(opts)
+  original_win = api.nvim_get_current_win()
+
+  if not M.open_floating_window(opts) then
+    return
+  end
+
+  M.setup_prompt(opts.modes.search_down)
+  M.set_prompt_callback(function(input)
+    vim.fn.search(input, "w")
+  end)
+end
+
+function M.open_search_up(opts)
+  original_win = api.nvim_get_current_win()
+
+  if not M.open_floating_window(opts) then
+    return
+  end
+
+  M.setup_prompt(opts.modes.search_up)
+  M.set_prompt_callback(function(input)
+    vim.fn.search(input, "b")
+  end)
+end
+
+function M.open_floating_window(opts)
+	if win ~= nil then
+		return false
+	end
 
 	buf = api.nvim_create_buf(false, true)
 	local ui = api.nvim_list_uis()[1]
@@ -72,22 +124,30 @@ function M.open(prefix, opts)
 	})
 
 	vim.bo[buf].buftype = "prompt"
-
-  local prompt = prefix_to_prompt[prefix].prompt
-  local hl = prefix_to_prompt[prefix].hl
-
-  vim.wo[win].winhl = "FloatBorder:".. hl
-  set_mark(buf, prompt, hl)
-	vim.fn.prompt_setprompt(buf, prompt)
 	api.nvim_input("A")
 
 	api.nvim_create_autocmd("InsertLeave", { buffer = buf, callback = M.close })
 	api.nvim_create_autocmd("BufLeave", { buffer = buf, callback = M.close })
 
+  return true
+end
+
+---@param mode mode
+function M.setup_prompt(mode)
+  local prompt = mode.prompt
+  local hl = mode.hl
+
+  vim.wo[win].winhl = "FloatBorder:".. hl
+  set_mark(buf, prompt, hl)
+	vim.fn.prompt_setprompt(buf, prompt)
+end
+
+---@param callback fun(input : string)
+function M.set_prompt_callback(callback)
 	vim.fn.prompt_setcallback(buf, function(input)
 		if input and input ~= "" then
 			api.nvim_set_current_win(original_win)
-			vim.cmd(input) -- Run the command
+      callback(input)
 		end
 		M.close()
 	end)
